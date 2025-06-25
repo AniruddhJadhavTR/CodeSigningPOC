@@ -45,6 +45,15 @@ jobs:
         name: build-artifacts
         path: artifacts/
 
+    - name: Install Windows SDK
+      shell: pwsh
+      run: |
+        # Download and install Windows SDK
+        $sdkUrl = "https://go.microsoft.com/fwlink/?linkid=2196127"
+        $installerPath = "$env:RUNNER_TEMP\winsdksetup.exe"
+        Invoke-WebRequest -Uri $sdkUrl -OutFile $installerPath
+        Start-Process -FilePath $installerPath -ArgumentList "/quiet", "/norestart", "/features", "OptionId.SigningTools" -Wait
+
     - name: Create self-signed certificate and sign DLL
       shell: pwsh
       run: |
@@ -53,7 +62,42 @@ jobs:
         $password = ConvertTo-SecureString -String "P@ssw0rd!" -Force -AsPlainText
         Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $password
         $dllPath = "artifacts\DummyWebApp.dll"
-        & "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe" sign /f $pfxPath /p "P@ssw0rd!" /fd SHA256 $dllPath
+        
+        # Find signtool.exe in Windows Kits
+        $signtoolPaths = @(
+          "C:\Program Files (x86)\Windows Kits\10\bin\x64\signtool.exe",
+          "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe",
+          "C:\Program Files (x86)\Windows Kits\10\bin\10.0.22000.0\x64\signtool.exe"
+        )
+        
+        $signtool = $null
+        foreach ($path in $signtoolPaths) {
+          if (Test-Path $path) {
+            $signtool = $path
+            break
+          }
+        }
+        
+        if (-not $signtool) {
+          # Try to find any version dynamically
+          $kitsBin = "C:\Program Files (x86)\Windows Kits\10\bin"
+          if (Test-Path $kitsBin) {
+            $signtool = Get-ChildItem -Path $kitsBin -Recurse -Name "signtool.exe" | 
+                       Where-Object { $_ -like "*x64*" } | 
+                       Select-Object -First 1
+            if ($signtool) {
+              $signtool = Join-Path $kitsBin $signtool
+            }
+          }
+        }
+        
+        if ($signtool -and (Test-Path $signtool)) {
+          Write-Host "Using signtool at: $signtool"
+          & $signtool sign /f $pfxPath /p "P@ssw0rd!" /fd SHA256 $dllPath
+        } else {
+          Write-Error "signtool.exe not found"
+          exit 1
+        }
 
     - name: Upload signed artifacts
       uses: actions/upload-artifact@v4
